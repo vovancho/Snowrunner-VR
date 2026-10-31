@@ -13,6 +13,14 @@ jobs:
         shell: bash
         run: git apply --ignore-whitespace map_offcenter_ui_quad_v05.patch
 
+      # Upstream CMakeLists.txt does not list these two sources, which causes
+      # LNK2019/LNK1120 (game_addresses, xrinput::*). Add them to the target.
+      - name: Add missing sources to CMakeLists.txt
+        shell: bash
+        run: |
+          sed -i 's|^\(\s*\)src/hooks/pattern_scan.cpp\s*$|&\n\1src/hooks/game_addresses.cpp\n\1src/xr/xr_input.cpp|' CMakeLists.txt
+          grep -n "game_addresses.cpp\|xr_input.cpp" CMakeLists.txt
+
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
