@@ -1,0 +1,27 @@
+name: Build dxgi.dll
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply patch
+        shell: bash
+        run: git apply --ignore-whitespace map_offcenter_ui_quad_v05.patch
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxgi
+          path: |
+            build/Release/dxgi.dll
+            build/Release/dxgi.map
