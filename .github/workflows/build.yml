@@ -11,7 +11,7 @@ jobs:
 
       - name: Apply patch
         shell: bash
-        run: git apply --ignore-whitespace map_offcenter_ui_quad_v05.patch
+        run: git apply --ignore-whitespace map_offcenter_v06.patch
 
       # Upstream CMakeLists.txt does not list these two sources, which causes
       # LNK2019/LNK1120 (game_addresses, xrinput::*). Add them to the target.
