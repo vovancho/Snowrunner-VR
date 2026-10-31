@@ -1,0 +1,73 @@
+--- a/src/xr/xr_mirror.cpp	2026-10-28 16:53:49.607828987 +0000
++++ b/src/xr/xr_mirror.cpp	2026-10-28 16:53:49.655411348 +0000
+@@ -3119,6 +3119,41 @@
+ }
+ 
+ 
++// OFF-CENTRE QUAD FIT. A frame rendered at an off-centre frustum spans that
++// eye's OWN tangent bounds [tl,tr] x [td,tu], not a symmetric +-tan(hh). A quad
++// that shows it must therefore be (tr-tl) x (tu-td) wide, centred on the
++// bounds' middle, or the image is stretched and shifted -- and because the two
++// eyes' bounds are mirror images, a mono panel fed alternately by both eyes
++// swings between two positions (a doubled map). The mapping tangent -> metres
++// (s) is the symmetric one, so with off-centre off this is exactly the old
++// {widthM, widthM * tan(vh)/tan(hh)} and no offset.
++void fit_quad_to_eye_frustum(XrCompositionLayerQuad& quad, int eye, float hh,
++                             float vh, float widthM, float& offX, float& offY)
++{
++    float tl = -std::tan(hh), tr = std::tan(hh);
++    float tu =  std::tan(vh), td = -std::tan(vh);
++    {
++        float a, b, c, d;
++        if (render_eye_frustum_tan(eye, a, b, c, d)) { tl = a; tr = b; tu = c; td = d; }
++    }
++    const float s = widthM / (2.0f * std::tan(hh));
++    quad.size = {(tr - tl) * s, (tu - td) * s};
++    offX = 0.5f * (tl + tr) * s;
++    offY = 0.5f * (tu + td) * s;
++}
++
++// Slide a placed quad within its own plane (after place_ui_plane_quad).
++void shift_quad_in_plane(XrCompositionLayerQuad& quad, float offX, float offY)
++{
++    if (offX == 0.0f && offY == 0.0f) return;
++    const Quat q{quad.pose.orientation.x, quad.pose.orientation.y,
++                 quad.pose.orientation.z, quad.pose.orientation.w};
++    const Vec3 d = rotate(q, {offX, offY, 0.0f});
++    quad.pose.position.x += d.x;
++    quad.pose.position.y += d.y;
++    quad.pose.position.z += d.z;
++}
++
+ // Builds (and renders) the game UI's own composition layer. Head-locked or
+ // pinned in the world, sized as a fraction of the render's own angular extent
+ // -- except on the map, which is forced to the full extent so screen-space
+@@ -3166,9 +3201,11 @@
+     quad.subImage.imageArrayIndex = 0;
+ 
+     const float widthM = g_uiPlaneSizeM.load();
+-    quad.size = {widthM, widthM * (std::tan(vh) / std::tan(hh))};
++    float offX = 0.0f, offY = 0.0f;
++    fit_quad_to_eye_frustum(quad, (int)eye, hh, vh, widthM, offX, offY);
+ 
+     place_ui_plane_quad(quad, displayTime, false);
++    shift_quad_in_plane(quad, offX, offY);
+     return true;
+ }
+ 
+@@ -3290,12 +3327,13 @@
+     // planes take the UI size and the markers line up on the panel instead.
+     const bool  mapLocked = hooks::in_map_view() && !flat_screen_active();
+     const float dist   = g_uiPlaneDistM.load();
+-    const float shape  = std::tan(vh) / std::tan(hh);
+     const float widthM = mapLocked ? (2.0f * dist * std::tan(hh))
+                                    : g_uiPlaneSizeM.load();
+-    quad.size = {widthM, widthM * shape};
++    float offX = 0.0f, offY = 0.0f;
++    fit_quad_to_eye_frustum(quad, kUiCaptureEye, hh, vh, widthM, offX, offY);
+ 
+     place_ui_plane_quad(quad, displayTime, mapLocked);
++    shift_quad_in_plane(quad, offX, offY);
+     return true;
+ }
+ 
