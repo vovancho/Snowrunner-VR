@@ -1,0 +1,146 @@
+--- a/src/xr/xr_mirror.h	2026-10-28 16:53:49.608340404 +0000
++++ b/src/xr/xr_mirror.h	2026-10-31 14:11:05.746830000 +0000
+@@ -366,6 +366,10 @@
+ // eyes then overlap over only part of their width, and outside that overlap the
+ // shift has no source. See the note at g_offcenter in xr_mirror.cpp.
+ bool offcenter_projection();
++// What the frame actually uses: the setting above, except OFF while a 2D flat
++// panel is showing. A panel is one mono image for both eyes, so the frame it
++// shows must not depend on which eye happened to render it.
++bool offcenter_active();
+ void set_offcenter_projection(bool on);
+ 
+ // THE frustum this eye is rendered at, as tangent bounds, already scaled by
+--- a/src/xr/xr_mirror.cpp	2026-10-28 16:53:49.607828987 +0000
++++ b/src/xr/xr_mirror.cpp	2026-10-31 14:11:05.759419367 +0000
+@@ -3119,6 +3119,41 @@
+ }
+ 
+ 
++// OFF-CENTRE QUAD FIT. A frame rendered at an off-centre frustum spans that
++// eye's OWN tangent bounds [tl,tr] x [td,tu], not a symmetric +-tan(hh). A quad
++// that shows it must therefore be (tr-tl) x (tu-td) wide, centred on the
++// bounds' middle, or the image is stretched and shifted -- and because the two
++// eyes' bounds are mirror images, a mono panel fed alternately by both eyes
++// swings between two positions (a doubled map). The mapping tangent -> metres
++// (s) is the symmetric one, so with off-centre off this is exactly the old
++// {widthM, widthM * tan(vh)/tan(hh)} and no offset.
++void fit_quad_to_eye_frustum(XrCompositionLayerQuad& quad, int eye, float hh,
++                             float vh, float widthM, float& offX, float& offY)
++{
++    float tl = -std::tan(hh), tr = std::tan(hh);
++    float tu =  std::tan(vh), td = -std::tan(vh);
++    {
++        float a, b, c, d;
++        if (render_eye_frustum_tan(eye, a, b, c, d)) { tl = a; tr = b; tu = c; td = d; }
++    }
++    const float s = widthM / (2.0f * std::tan(hh));
++    quad.size = {(tr - tl) * s, (tu - td) * s};
++    offX = 0.5f * (tl + tr) * s;
++    offY = 0.5f * (tu + td) * s;
++}
++
++// Slide a placed quad within its own plane (after place_ui_plane_quad).
++void shift_quad_in_plane(XrCompositionLayerQuad& quad, float offX, float offY)
++{
++    if (offX == 0.0f && offY == 0.0f) return;
++    const Quat q{quad.pose.orientation.x, quad.pose.orientation.y,
++                 quad.pose.orientation.z, quad.pose.orientation.w};
++    const Vec3 d = rotate(q, {offX, offY, 0.0f});
++    quad.pose.position.x += d.x;
++    quad.pose.position.y += d.y;
++    quad.pose.position.z += d.z;
++}
++
+ // Builds (and renders) the game UI's own composition layer. Head-locked or
+ // pinned in the world, sized as a fraction of the render's own angular extent
+ // -- except on the map, which is forced to the full extent so screen-space
+@@ -3166,9 +3201,11 @@
+     quad.subImage.imageArrayIndex = 0;
+ 
+     const float widthM = g_uiPlaneSizeM.load();
+-    quad.size = {widthM, widthM * (std::tan(vh) / std::tan(hh))};
++    float offX = 0.0f, offY = 0.0f;
++    fit_quad_to_eye_frustum(quad, (int)eye, hh, vh, widthM, offX, offY);
+ 
+     place_ui_plane_quad(quad, displayTime, false);
++    shift_quad_in_plane(quad, offX, offY);
+     return true;
+ }
+ 
+@@ -3290,12 +3327,13 @@
+     // planes take the UI size and the markers line up on the panel instead.
+     const bool  mapLocked = hooks::in_map_view() && !flat_screen_active();
+     const float dist   = g_uiPlaneDistM.load();
+-    const float shape  = std::tan(vh) / std::tan(hh);
+     const float widthM = mapLocked ? (2.0f * dist * std::tan(hh))
+                                    : g_uiPlaneSizeM.load();
+-    quad.size = {widthM, widthM * shape};
++    float offX = 0.0f, offY = 0.0f;
++    fit_quad_to_eye_frustum(quad, kUiCaptureEye, hh, vh, widthM, offX, offY);
+ 
+     place_ui_plane_quad(quad, displayTime, mapLocked);
++    shift_quad_in_plane(quad, offX, offY);
+     return true;
+ }
+ 
+@@ -3416,7 +3454,7 @@
+ // reason a constant suffices.
+ float dibr_eye_pixel_offset(int srcEye, int dstEye, uint32_t widthPx)
+ {
+-    if (!offcenter_projection() || widthPx == 0) return 0.0f;
++    if (!offcenter_active() || widthPx == 0) return 0.0f;
+     float sl, sr, su, sdn, dl, dr, du, ddn;
+     if (!render_eye_frustum_tan(srcEye, sl, sr, su, sdn)) return 0.0f;
+     if (!render_eye_frustum_tan(dstEye, dl, dr, du, ddn)) return 0.0f;
+@@ -5245,7 +5283,7 @@
+             // PROJ LOCK built the matrix from, so the declaration cannot drift
+             // from the render.
+             bool declaredOffcenter = false;
+-            if (offcenter_projection()) {
++            if (offcenter_active()) {
+                 float tl, tr, tup, tdn;
+                 if (render_eye_frustum_tan((int)e, tl, tr, tup, tdn)) {
+                     pv[e].fov.angleLeft  = std::atan(tl);
+@@ -5845,6 +5883,9 @@
+ 
+ bool offcenter_projection() { return g_offcenter.load(std::memory_order_relaxed); }
+ 
++// See the note at the declaration. Defined after flat_screen_active() below.
++bool offcenter_active();
++
+ // TRUE while the screen we are on is set to 2D. Read by everything that has to
+ // change shape for it: the fov scale, the eye offset, both quads and the layer
+ // list. Map first -- in_gameplay() already reads false there, so the garage
+@@ -5858,6 +5899,11 @@
+     return false;
+ }
+ 
++bool offcenter_active()
++{
++    return g_offcenter.load(std::memory_order_relaxed) && !flat_screen_active();
++}
++
+ bool ui_stays_in_frame()
+ {
+     // single_quad_runtime() first: it is a cached constant, false on Windows,
+@@ -5955,7 +6001,7 @@
+ {
+     if (eye < 0 || eye > 1) return false;
+ 
+-    if (offcenter_projection()) {
++    if (offcenter_active()) {
+         const XrFovf& f = g.lastView[eye].fov;
+         if (std::fabs(f.angleLeft) + std::fabs(f.angleRight) > 0.01f) {
+             const float s = composited_fov_scale();
+--- a/src/hooks/viewbuild_hook.cpp	2026-10-28 16:53:49.607348155 +0000
++++ b/src/hooks/viewbuild_hook.cpp	2026-10-31 14:11:05.760611613 +0000
+@@ -1546,7 +1546,7 @@
+                         // shear we write is unconditional per frame, so there
+                         // is nothing of ours to inherit anyway.
+                         bool offc = false;
+-                        if (xr::offcenter_projection()) {
++                        if (xr::offcenter_active()) {
+                             float tl, tr, tup, tdn;
+                             if (xr::render_eye_frustum_tan(xr::render_eye(),
+                                                            tl, tr, tup, tdn)) {
